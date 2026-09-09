@@ -1,0 +1,120 @@
+name: Horse Edge Live Snapshot 20260909
+
+on:
+  push:
+    branches: [horse-edge-source-repair-20260909]
+    paths:
+      - '.github/workflows/horse-edge-live-snapshot-20260909.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install hkjc-api
+        run: |
+          mkdir -p /tmp/horse-edge-live
+          cd /tmp/horse-edge-live
+          npm init -y >/dev/null 2>&1
+          npm install --silent hkjc-api@1.0.5
+      - name: Capture current HKJC race card and odds
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/horse-edge-live
+          mkdir -p out
+          cat > snapshot.mjs <<'JS'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { HorseRacingAPI, defaultClient, horseOddsQuery, horsePoolQuery } from 'hkjc-api';
+
+          const DATE='2026-09-09', VENUE='HV';
+          const snap = new Date().toISOString();
+          const api = new HorseRacingAPI();
+          const all = await api.getAllRaces();
+          fs.writeFileSync('out/GET_ALL_RACES_RAW.json', JSON.stringify(all,null,2));
+          const meeting = (all||[]).find(m => String(m.date||m.raceDate||'')===DATE && String(m.venueCode||m.venue||'').toUpperCase()===VENUE);
+          if (!meeting) throw new Error('Target meeting not found. Available='+JSON.stringify((all||[]).map(m=>[m.date,m.venueCode])));
+          fs.writeFileSync('out/MEETING_RAW.json', JSON.stringify(meeting,null,2));
+
+          const rows=[];
+          for (const race of meeting.races||[]) {
+            const raceNo=Number(race.no ?? race.raceNo ?? 0);
+            for (const r of race.runners||[]) {
+              rows.push({
+                snapshot_at:snap,
+                race_date:DATE, venue:VENUE, race_no:raceNo,
+                post_time:race.postTime ?? null,
+                distance:race.distance ?? null,
+                going:race.go_en ?? race.going ?? null,
+                race_class:race.claCode ?? race.raceClass_en ?? null,
+                course:race.raceCourse?.displayCode ?? race.raceCourse?.description_en ?? null,
+                horse_no:Number(r.no ?? r.saddleClothNo ?? 0)||null,
+                horse_code:r.horse?.code ?? null,
+                horse_name_ch:r.name_ch ?? null,
+                horse_name_en:r.name_en ?? null,
+                draw:r.barrierDrawNumber ?? null,
+                carried_weight:r.handicapWeight ?? null,
+                horse_bodyweight:r.currentWeight ?? null,
+                rating:r.currentRating ?? null,
+                gear:r.gearInfo ?? null,
+                standby_no:r.standbyNo ?? null,
+                jockey_code:r.jockey?.code ?? null,
+                jockey_name_ch:r.jockey?.name_ch ?? null,
+                jockey_name_en:r.jockey?.name_en ?? null,
+                trainer_code:r.trainer?.code ?? null,
+                trainer_name_ch:r.trainer?.name_ch ?? null,
+                trainer_name_en:r.trainer?.name_en ?? null,
+              });
+            }
+          }
+          fs.writeFileSync('out/LIVE_CARD.json', JSON.stringify(rows,null,2));
+          const cols=Object.keys(rows[0]||{});
+          const esc=v => v==null?'':('"'+String(v).replaceAll('"','""')+'"');
+          fs.writeFileSync('out/LIVE_CARD.csv', cols.join(',')+'\n'+rows.map(r=>cols.map(c=>esc(r[c])).join(',')).join('\n')+'\n');
+
+          const odds=[]; const pools=[];
+          const oddsTypes=['WIN','PLA','QIN','QPL','TRI'];
+          for (const race of meeting.races||[]) {
+            const raceNo=Number(race.no ?? race.raceNo ?? 0);
+            if (!raceNo) continue;
+            for (let i=0;i<oddsTypes.length;i+=4) {
+              const chunk=oddsTypes.slice(i,i+4);
+              try {
+                const resp=await defaultClient.request(horseOddsQuery,{date:DATE,venueCode:VENUE,raceNo,oddsTypes:chunk});
+                const pms=resp?.raceMeetings?.[0]?.pmPools ?? [];
+                for (const p of pms) for (const n of (p.oddsNodes ?? [])) odds.push({snapshot_at:snap,race_no:raceNo,pool_type:p.oddsType,combination:n.combString,odds:n.oddsValue});
+              } catch(e) { odds.push({snapshot_at:snap,race_no:raceNo,pool_type:'ERROR',combination:chunk.join('+'),odds:null,error:String(e?.message||e)}); }
+              try {
+                const resp=await defaultClient.request(horsePoolQuery,{date:DATE,venueCode:VENUE,raceNo,oddsTypes:chunk});
+                const invs=resp?.raceMeetings?.[0]?.poolInvs ?? [];
+                for (const p of invs) pools.push({snapshot_at:snap,race_no:raceNo,pool_type:p.oddsType,investment:p.investment});
+              } catch(e) { pools.push({snapshot_at:snap,race_no:raceNo,pool_type:'ERROR',investment:null,error:String(e?.message||e)}); }
+            }
+          }
+          fs.writeFileSync('out/LIVE_ODDS.json', JSON.stringify(odds,null,2));
+          fs.writeFileSync('out/LIVE_POOL_TOTALS.json', JSON.stringify(pools,null,2));
+          const summary={snapshot_at:snap,date:DATE,venue:VENUE,races:(meeting.races||[]).length,runners:rows.length,odds_rows:odds.length,pool_rows:pools.length,meeting_post_times:(meeting.races||[]).map(r=>({race_no:Number(r.no??0),post_time:r.postTime??null,going:r.go_en??null,distance:r.distance??null}))};
+          fs.writeFileSync('out/SUMMARY.json', JSON.stringify(summary,null,2));
+
+          const files=fs.readdirSync('out').sort();
+          const sums=files.map(f=>crypto.createHash('sha256').update(fs.readFileSync('out/'+f)).digest('hex')+'  '+f).join('\n')+'\n';
+          fs.writeFileSync('out/SHA256SUMS.txt',sums);
+          console.log(JSON.stringify(summary,null,2));
+          JS
+          node snapshot.mjs
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: horse-edge-live-snapshot-20260909
+          path: /tmp/horse-edge-live/out/
+          retention-days: 7
+          if-no-files-found: error
