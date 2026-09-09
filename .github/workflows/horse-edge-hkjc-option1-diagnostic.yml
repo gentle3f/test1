@@ -1,0 +1,58 @@
+name: Horse Edge HKJC Option1 Diagnostic
+
+on:
+  push:
+    branches: [horse-edge-source-repair-20260909]
+    paths: ['.github/workflows/horse-edge-hkjc-option1-diagnostic.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: HTTP probe
+        run: |
+          set +e
+          URL='https://racing.hkjc.com/en-us/local/information/horse?HorseNo=D241&Option=1'
+          curl -L --max-time 20 -A 'Mozilla/5.0' -D /tmp/headers.txt -o /tmp/d241.html "$URL"
+          RC=$?
+          echo "curl_rc=$RC bytes=$(wc -c </tmp/d241.html 2>/dev/null || echo 0)"
+          head -30 /tmp/headers.txt || true
+          grep -oiE 'Horse Form Records \(All\)|Rtg\.|No such record|Access Denied' /tmp/d241.html | head -20 || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet selenium
+      - name: Chrome probe
+        run: |
+          python3 <<'PY'
+          import hashlib,time
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.support.ui import WebDriverWait
+          url='https://racing.hkjc.com/en-us/local/information/horse?HorseNo=D241&Option=1'
+          o=Options(); o.add_argument('--headless=new'); o.add_argument('--no-sandbox'); o.add_argument('--disable-dev-shm-usage'); o.add_argument('--blink-settings=imagesEnabled=false'); o.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36')
+          d=webdriver.Chrome(options=o); d.set_page_load_timeout(20)
+          t=time.time()
+          try:
+              d.get(url); WebDriverWait(d,10).until(lambda x:x.execute_script('return document.readyState')=='complete'); time.sleep(.5)
+              html=d.page_source or ''; text=d.find_element('tag name','body').text or ''
+              open('/tmp/d241_chrome.html','w',encoding='utf-8').write(html)
+              print('elapsed',round(time.time()-t,2),'final',d.current_url,'title',repr(d.title),'bytes',len(html.encode()),'sha256',hashlib.sha256(html.encode()).hexdigest())
+              print('signals',{'all':('Horse Form Records (All)' in text),'rtg':('Rtg.' in text),'no_record':('No such record' in text),'access_denied':('Access Denied' in text)})
+              print('body_head',repr(text[:1200]))
+          finally: d.quit()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: horse-edge-hkjc-option1-diagnostic
+          path: |
+            /tmp/d241.html
+            /tmp/d241_chrome.html
+            /tmp/headers.txt
+          retention-days: 2
