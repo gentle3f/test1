@@ -1,0 +1,33 @@
+name: Horse Edge R6-R8 Evidence 20260909
+on:
+  push:
+    paths: ['.github/workflows/horse-edge-r678-evidence-20260909.yml']
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Fetch evidence
+        run: |
+          mkdir -p /tmp/evidence
+          cat > /tmp/evidence/fetch.mjs <<'JS'
+          import fs from 'fs'; import crypto from 'crypto';
+          const date='2026/09/09',venue='HV';
+          const kinds=['racereportext','localtrackwork','exceptionalfactors','veterinaryrecord'];
+          function clean(s){return s.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g,' ').trim();}
+          const manifest=[];
+          for (let r=6;r<=8;r++) for (const k of kinds){
+            const url=`https://racing.hkjc.com/en-us/local/information/${k}?RaceNo=${r}&Racecourse=${venue}&racedate=${encodeURIComponent(date)}`;
+            const res=await fetch(url,{headers:{'user-agent':'Mozilla/5.0'}}); const html=await res.text();
+            const base=`r${r}_${k}`; fs.writeFileSync(`/tmp/evidence/${base}.html`,html); fs.writeFileSync(`/tmp/evidence/${base}.txt`,clean(html));
+            manifest.push({r,k,url,status:res.status,bytes:Buffer.byteLength(html),sha256:crypto.createHash('sha256').update(html).digest('hex')});
+          }
+          fs.writeFileSync('/tmp/evidence/manifest.json',JSON.stringify(manifest,null,2));
+          JS
+          node /tmp/evidence/fetch.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horse-edge-r678-evidence-20260909
+          path: /tmp/evidence
