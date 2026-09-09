@@ -1,0 +1,78 @@
+name: Horse Edge HKJC Option1 Raw HTTP Acquisition
+
+on:
+  push:
+    branches: [horse-edge-source-repair-20260909]
+    paths: ['.github/workflows/horse-edge-hkjc-option1-raw-http.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Acquire exact HTTP response bytes in parallel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p acq_http/raw_html
+          python3 <<'PY'
+          import concurrent.futures, csv, hashlib, json, subprocess, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          codes=[x.strip().upper() for x in Path('horse_edge_source_repair_20260909/horse_codes.txt').read_text().splitlines() if x.strip()]
+          out=Path('acq_http'); raw=out/'raw_html'; retrieved=datetime.now(timezone.utc).isoformat()
+          urls=(
+            'https://racing.hkjc.com/en-us/local/information/horse?HorseNo={code}&Option=1',
+            'https://racing.hkjc.com/racing/information/English/Horse/Horse.aspx?HorseNo={code}&Option=1',
+          )
+
+          def one(code):
+              errors=[]
+              for templ in urls:
+                  url=templ.format(code=code)
+                  target=raw/f'{code}.html.part'
+                  cmd=['curl','-sS','-L','--fail-with-body','--connect-timeout','10','--max-time','30','--retry','2','--retry-delay','1','-A','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36','-H','Accept-Language: en-US,en;q=0.8,zh-HK;q=0.5','-w','%{http_code}\t%{url_effective}','-o',str(target),url]
+                  t=time.time(); p=subprocess.run(cmd,capture_output=True,text=True)
+                  meta=(p.stdout or '').strip().split('\t',1); status=meta[0] if meta else ''; final=meta[1] if len(meta)>1 else ''
+                  b=target.read_bytes() if target.exists() else b''
+                  # Check exact server bytes for form signals. ASCII tokens are stable in the HTML.
+                  has_all=(b'Horse Form Records (All)' in b) or (b'Form Records (All)' in b)
+                  has_rtg=(b'Rtg.' in b) or (b'>Rtg<' in b)
+                  if p.returncode==0 and status=='200' and len(b)>5000 and has_all and has_rtg:
+                      dest=raw/f'{code}.html'; target.replace(dest)
+                      return {'horse_code':code,'success':True,'request_url':url,'final_url':final,'http_status':status,'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b),'all_records_marker':has_all,'rtg_marker':has_rtg,'elapsed_sec':round(time.time()-t,3),'retrieved_at_utc':retrieved,'errors':' || '.join(errors)}
+                  errors.append(f'{url}: rc={p.returncode} status={status} bytes={len(b)} all={has_all} rtg={has_rtg} stderr={(p.stderr or "")[-300:]}')
+                  if target.exists(): target.unlink()
+              return {'horse_code':code,'success':False,'request_url':urls[0].format(code=code),'final_url':'','http_status':'','sha256':'','bytes':0,'all_records_marker':False,'rtg_marker':False,'elapsed_sec':'','retrieved_at_utc':retrieved,'errors':' || '.join(errors)}
+
+          rows=[]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+              futs={ex.submit(one,c):c for c in codes}
+              for i,f in enumerate(concurrent.futures.as_completed(futs),1):
+                  r=f.result(); rows.append(r); print(f'[{i}/{len(codes)}] {r["horse_code"]} success={r["success"]} bytes={r["bytes"]} elapsed={r["elapsed_sec"]}', flush=True)
+          rows.sort(key=lambda r:r['horse_code'])
+          fields=['horse_code','success','request_url','final_url','http_status','sha256','bytes','all_records_marker','rtg_marker','elapsed_sec','retrieved_at_utc','errors']
+          with (out/'RAW_MANIFEST.csv').open('w',newline='',encoding='utf-8') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+          summary={'retrieved_at_utc':retrieved,'requested_horses':len(codes),'successful_horses':sum(bool(r['success']) for r in rows),'failed_horses':sum(not bool(r['success']) for r in rows),'raw_html_files':sum(bool(r['sha256']) for r in rows),'acquisition_status':'COMPLETE' if all(bool(r['success']) for r in rows) else 'PARTIAL','concurrency':8,'transport':'curl HTTPS GET; exact HTTP response body bytes; redirects followed','note':'Acquisition status only; downstream v4 source-health remains authoritative.'}
+          (out/'SUMMARY.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False),encoding='utf-8')
+          print(json.dumps(summary,indent=2,ensure_ascii=False))
+          PY
+      - name: Hash payload
+        if: always()
+        run: |
+          cd acq_http
+          find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          cat SUMMARY.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: horse-edge-hkjc-option1-raw-http-20260909
+          path: acq_http/
+          if-no-files-found: error
+          retention-days: 14
