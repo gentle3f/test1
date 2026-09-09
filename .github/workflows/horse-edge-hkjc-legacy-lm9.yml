@@ -1,0 +1,48 @@
+name: Horse Edge HKJC Legacy LM9 Raw
+
+on:
+  push:
+    branches: [horse-edge-source-repair-20260909]
+    paths: ['.github/workflows/horse-edge-hkjc-legacy-lm9.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Capture 9 legacy official Option1 pages
+        run: |
+          set -euo pipefail
+          mkdir -p lm9/raw_html
+          python3 <<'PY'
+          import concurrent.futures,csv,hashlib,json,subprocess,time
+          from datetime import datetime,timezone
+          from pathlib import Path
+          codes=[x.strip() for x in Path('horse_edge_source_repair_20260909/legacy_lm_codes9.txt').read_text().splitlines() if x.strip()]
+          out=Path('lm9'); raw=out/'raw_html'; retrieved=datetime.now(timezone.utc).isoformat()
+          def one(code):
+            url=f'https://racing.hkjc.com/en-us/local/information/horse?HorseNo={code}&Option=1'; p=raw/f'{code}.html'
+            r=subprocess.run(['curl','-sS','-L','--fail-with-body','--connect-timeout','10','--max-time','30','--retry','2','--retry-delay','1','-A','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36','-w','%{http_code}\t%{url_effective}','-o',str(p),url],capture_output=True,text=True)
+            meta=(r.stdout or '').strip().split('\t',1); status=meta[0] if meta else ''; final=meta[1] if len(meta)>1 else ''; b=p.read_bytes() if p.exists() else b''; ok=r.returncode==0 and status=='200' and len(b)>5000
+            if not ok and p.exists(): p.unlink()
+            return {'horse_code':code,'success':ok,'request_url':url,'final_url':final,'http_status':status,'sha256':hashlib.sha256(b).hexdigest() if ok else '','bytes':len(b) if ok else 0,'rtg_marker':b'Rtg.' in b,'retrieved_at_utc':retrieved,'error':(r.stderr or '')[-400:]}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=9) as ex: rows=list(ex.map(one,codes))
+          for r in rows: print(r)
+          with (out/'RAW_MANIFEST.csv').open('w',newline='',encoding='utf-8') as f:
+            w=csv.DictWriter(f,fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+          s={'requested':len(rows),'success':sum(bool(x['success']) for x in rows),'status':'COMPLETE' if all(x['success'] for x in rows) else 'PARTIAL'}; (out/'SUMMARY.json').write_text(json.dumps(s,indent=2)); print(s)
+          PY
+      - name: Hash
+        if: always()
+        run: |
+          cd lm9; find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: horse-edge-hkjc-legacy-lm9-20260909
+          path: lm9/
+          retention-days: 14
