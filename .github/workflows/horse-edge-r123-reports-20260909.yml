@@ -1,0 +1,39 @@
+name: Horse Edge R1-R3 Reports 20260909
+on:
+  push:
+    branches: [horse-edge-source-repair-20260909]
+    paths: ['.github/workflows/horse-edge-r123-reports-20260909.yml']
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Fetch reports
+        shell: bash
+        run: |
+          mkdir -p /tmp/rpts
+          cat > /tmp/rpts/fetch.mjs <<'JS'
+          import fs from 'fs'; import crypto from 'crypto';
+          const urls=[];
+          for(let r=1;r<=3;r++) urls.push([`corunning_r${r}`,`https://racing.hkjc.com/en-us/local/information/corunning?Date=20260909&RaceNo=${r}`]);
+          for (const [name,url] of [['report_date','https://racing.hkjc.com/en-us/local/information/racereportfull?RaceDate=20260909'],['report_date2','https://racing.hkjc.com/en-us/local/information/racereportfull?Date=20260909']]) urls.push([name,url]);
+          const meta=[];
+          for(const [name,url] of urls){const res=await fetch(url,{headers:{'user-agent':'Mozilla/5.0'}}); const html=await res.text(); fs.writeFileSync(`/tmp/rpts/${name}.html`,html); meta.push({name,url,status:res.status,bytes:Buffer.byteLength(html),sha256:crypto.createHash('sha256').update(html).digest('hex')});}
+          fs.writeFileSync('/tmp/rpts/meta.json',JSON.stringify(meta,null,2));
+          JS
+          node /tmp/rpts/fetch.mjs
+          python - <<'PY'
+          import re,html,json
+          from pathlib import Path
+          for fn in Path('/tmp/rpts').glob('*.html'):
+              raw=fn.read_text(errors='ignore')
+              txt=html.unescape(re.sub(r'<[^>]+>',' ',raw)); txt=' '.join(txt.split())
+              Path(str(fn).replace('.html','.txt')).write_text(txt)
+              print(fn.name,len(raw),txt[:200])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horse-edge-r123-reports-20260909
+          path: /tmp/rpts
