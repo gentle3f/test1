@@ -1,0 +1,155 @@
+name: Horse Edge HKJC Option1 Raw Acquisition
+
+on:
+  push:
+    branches:
+      - horse-edge-source-repair-20260909
+    paths:
+      - '.github/workflows/horse-edge-hkjc-option1-acquire.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Selenium
+        run: pip install --quiet selenium
+
+      - name: Acquire rendered HKJC Option=1 pages
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p acq_out/raw_html acq_out/screenshots
+          python3 <<'PY'
+          import csv, hashlib, json, os, time, traceback
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.support.ui import WebDriverWait
+
+          codes = [x.strip().upper() for x in Path('horse_edge_source_repair_20260909/horse_codes.txt').read_text().splitlines() if x.strip()]
+          out = Path('acq_out')
+          raw = out / 'raw_html'
+          shots = out / 'screenshots'
+          manifest = []
+
+          opts = Options()
+          opts.add_argument('--headless=new')
+          opts.add_argument('--no-sandbox')
+          opts.add_argument('--disable-dev-shm-usage')
+          opts.add_argument('--disable-gpu')
+          opts.add_argument('--window-size=1280,1600')
+          opts.add_argument('--lang=en-US')
+          opts.add_argument('--disable-notifications')
+          opts.add_argument('--blink-settings=imagesEnabled=false')
+          opts.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36')
+
+          driver = webdriver.Chrome(options=opts)
+          driver.set_page_load_timeout(25)
+          retrieved = datetime.now(timezone.utc).isoformat()
+
+          candidates = [
+              'https://racing.hkjc.com/en-us/local/information/horse?HorseNo={code}&Option=1',
+              'https://racing.hkjc.com/racing/information/English/Horse/Horse.aspx?HorseNo={code}&Option=1',
+          ]
+
+          try:
+              for i, code in enumerate(codes, 1):
+                  success = False
+                  errors = []
+                  chosen = None
+                  final_url = None
+                  html = ''
+                  title = ''
+                  marker = False
+                  for templ in candidates:
+                      url = templ.format(code=code)
+                      try:
+                          driver.get(url)
+                          WebDriverWait(driver, 15).until(lambda d: d.execute_script('return document.readyState') == 'complete')
+                          time.sleep(0.8)
+                          html = driver.page_source or ''
+                          title = driver.title or ''
+                          final_url = driver.current_url
+                          text = (driver.find_element('tag name', 'body').text or '') if html else ''
+                          marker = ('Horse Form Records (All)' in text or 'Form Records (All)' in text or '馬匹往績紀錄（全部）' in text)
+                          has_table_signal = ('Rtg.' in text and ('Race' in text or 'Season' in text)) or marker
+                          if len(html.encode('utf-8')) > 5000 and has_table_signal:
+                              chosen = url
+                              success = True
+                              break
+                          errors.append(f'{url}: loaded but no full-form signal; title={title!r}; final={final_url!r}; bytes={len(html.encode("utf-8"))}')
+                      except Exception as e:
+                          errors.append(f'{url}: {type(e).__name__}: {e}')
+
+                  b = html.encode('utf-8') if html else b''
+                  sha = hashlib.sha256(b).hexdigest() if b else ''
+                  if b:
+                      (raw / f'{code}.html').write_bytes(b)
+                  if not success:
+                      try:
+                          driver.save_screenshot(str(shots / f'{code}.png'))
+                      except Exception:
+                          pass
+                  row = {
+                      'horse_code': code,
+                      'success': success,
+                      'request_url': chosen or candidates[0].format(code=code),
+                      'final_url': final_url or '',
+                      'title': title,
+                      'all_records_marker': marker,
+                      'sha256': sha,
+                      'bytes': len(b),
+                      'retrieved_at_utc': retrieved,
+                      'errors': ' || '.join(errors),
+                  }
+                  manifest.append(row)
+                  print(f'[{i}/{len(codes)}] {code}: success={success} bytes={len(b)} marker={marker} final={final_url}')
+                  time.sleep(0.55)
+          finally:
+              driver.quit()
+
+          fields = ['horse_code','success','request_url','final_url','title','all_records_marker','sha256','bytes','retrieved_at_utc','errors']
+          with (out/'RAW_MANIFEST.csv').open('w', newline='', encoding='utf-8') as f:
+              w = csv.DictWriter(f, fieldnames=fields)
+              w.writeheader(); w.writerows(manifest)
+          summary = {
+              'retrieved_at_utc': retrieved,
+              'requested_horses': len(codes),
+              'successful_horses': sum(bool(x['success']) for x in manifest),
+              'failed_horses': sum(not bool(x['success']) for x in manifest),
+              'raw_html_files': sum(bool(x['sha256']) for x in manifest),
+              'all_records_marker_count': sum(bool(x['all_records_marker']) for x in manifest),
+              'acquisition_status': 'COMPLETE' if all(bool(x['success']) for x in manifest) else 'PARTIAL',
+              'note': 'Acquisition status only. Source-health PASS/FAIL must be adjudicated downstream against pinned baseline.'
+          }
+          (out/'SUMMARY.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
+          print(json.dumps(summary, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Hash artifact payload
+        if: always()
+        run: |
+          cd acq_out
+          find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          cat SUMMARY.json || true
+
+      - name: Upload raw acquisition artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horse-edge-hkjc-option1-raw-20260909
+          path: acq_out/
+          if-no-files-found: error
+          retention-days: 14
