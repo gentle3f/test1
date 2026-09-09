@@ -1,0 +1,68 @@
+name: Horse Edge Results R1-R3 20260909
+on:
+  push:
+    branches: [horse-edge-source-repair-20260909]
+    paths: ['.github/workflows/horse-edge-results-r1-r3-20260909.yml']
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch and parse HKJC R1-R3 results
+        shell: bash
+        run: |
+          mkdir -p /tmp/results
+          cat > /tmp/results/fetch.mjs <<'JS'
+          import fs from 'fs';
+          import crypto from 'crypto';
+          const date='2026/09/09', venue='HV';
+          function clean(s){return s.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g,' ').trim();}
+          const out=[];
+          for (let raceNo=1; raceNo<=3; raceNo++) {
+            const url=`https://racing.hkjc.com/en-us/local/information/localresults?Racecourse=${venue}&racedate=${encodeURIComponent(date)}&RaceNo=${raceNo}`;
+            const res=await fetch(url,{headers:{'user-agent':'Mozilla/5.0'}});
+            const html=await res.text();
+            fs.writeFileSync(`/tmp/results/r${raceNo}.html`,html);
+            const sha=crypto.createHash('sha256').update(html).digest('hex');
+            const text=clean(html);
+            fs.writeFileSync(`/tmp/results/r${raceNo}.txt`,text);
+            out.push({raceNo,url,status:res.status,bytes:Buffer.byteLength(html),sha256:sha,text});
+          }
+          fs.writeFileSync('/tmp/results/results.json',JSON.stringify(out,null,2));
+          JS
+          node /tmp/results/fetch.mjs
+          python - <<'PY'
+          import json,re,csv,html as h
+          from pathlib import Path
+          data=json.load(open('/tmp/results/results.json'))
+          rows=[]
+          for d in data:
+              t=d['text']
+              # isolate result rows by patterns: placing, horse no, horse name, jockey, trainer, weights, draw, lbw, running pos, time, odds
+              # Use original HTML table rows for robust cell extraction.
+              raw=Path(f"/tmp/results/r{d['raceNo']}.html").read_text(errors='ignore')
+              for tr in re.findall(r'<tr[^>]*>([\s\S]*?)</tr>', raw, re.I):
+                  cells=[]
+                  for cell in re.findall(r'<t[dh][^>]*>([\s\S]*?)</t[dh]>', tr, re.I):
+                      x=re.sub(r'<script[\s\S]*?</script>',' ',cell,flags=re.I)
+                      x=re.sub(r'<[^>]+>',' ',x)
+                      x=h.unescape(re.sub(r'\s+',' ',x)).strip()
+                      cells.append(x)
+                  if len(cells)>=10 and re.fullmatch(r'\d+', cells[0] or '') and re.fullmatch(r'\d+', cells[1] or ''):
+                      # filter likely results table by presence of time / odds / running position
+                      if any(re.fullmatch(r'\d+:\d{2}\.\d{2}', c) for c in cells):
+                          rows.append([d['raceNo']]+cells)
+          with open('/tmp/results/result_rows.tsv','w',newline='') as f:
+              w=csv.writer(f,delimiter='\t');
+              for r in rows:w.writerow(r)
+          print('parsed rows',len(rows))
+          for r in rows: print('\t'.join(map(str,r[:14])))
+          PY
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: horse-edge-results-r1-r3-20260909
+          path: /tmp/results
