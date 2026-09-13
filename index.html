@@ -16,7 +16,7 @@
   <main class="boot" id="boot">
     <section class="boot-card">
       <h1>2026 法考主觀題 Case Coach</h1>
-      <p id="bootMsg">正在載入 Coach Learn V3.1 及兩冊案例教材……</p>
+      <p id="bootMsg">正在載入 Coach Learn V3 及兩冊案例教材……</p>
       <div class="bar"><span></span></div>
       <div class="err" id="bootErr"></div>
     </section>
@@ -29,16 +29,13 @@
     try{
       if(!globalThis.fflate) throw new Error('解壓元件載入失敗');
       msg.textContent='正在下載教材資料……';
-      const [r,g,h]=await Promise.all([
-        fetch('./FAKAO_CASE_COACH_2026_STATIC.zip?coach=v31',{cache:'no-store'}),
-        fetch('./guided-v3.js?coach=v31',{cache:'no-store'}),
-        fetch('./guided-v3-hotfix.js?coach=v31',{cache:'no-store'})
+      const [r,g]=await Promise.all([
+        fetch('./FAKAO_CASE_COACH_2026_STATIC.zip?coach=v3',{cache:'no-store'}),
+        fetch('./guided-v3.js?coach=v3',{cache:'no-store'})
       ]);
       if(!r.ok) throw new Error('ZIP 下載失敗：HTTP '+r.status);
       if(!g.ok) throw new Error('Coach Learn V3 載入失敗：HTTP '+g.status);
-      if(!h.ok) throw new Error('Coach Learn hotfix 載入失敗：HTTP '+h.status);
       const guided=await g.text();
-      const hotfix=await h.text();
       const bytes=new Uint8Array(await r.arrayBuffer());
       msg.textContent='正在解壓及建立題庫……';
       const files=fflate.unzipSync(bytes);
@@ -58,7 +55,15 @@
       (0,eval)(data);
       (0,eval)(app);
       (0,eval)(guided);
-      (0,eval)(hotfix);
+
+      // Hotfix: free-text Coach steps save on input, but V3 originally left the
+      // Continue button disabled until a re-render. Keep button state synced.
+      document.addEventListener('input',function(e){
+        const t=e.target && e.target.closest ? e.target.closest('[data-text-key]') : null;
+        if(!t) return;
+        const next=document.querySelector('[data-cv3="next"]');
+        if(next) next.disabled=!String(t.value||'').trim();
+      },true);
     }catch(e){
       console.error(e);msg.textContent='載入失敗';err.style.display='block';err.textContent=String(e&&e.message?e.message:e)+'\n\n請重新整理頁面再試。';
     }
