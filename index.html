@@ -10,6 +10,7 @@
     .boot{min-height:100vh;display:grid;place-items:center;padding:24px;box-sizing:border-box}.boot-card{width:min(560px,100%);background:#fff;border:1px solid #e3e7ec;border-radius:18px;padding:28px;box-sizing:border-box;box-shadow:0 12px 35px rgba(0,0,0,.06)}
     .boot h1{font-size:22px;margin:0 0 10px}.boot p{line-height:1.6;color:#5b6470;margin:8px 0}.bar{height:8px;border-radius:999px;background:#edf0f3;overflow:hidden;margin-top:18px}.bar>span{display:block;height:100%;width:35%;background:#8b1e2d;border-radius:999px;animation:load 1.2s ease-in-out infinite alternate}@keyframes load{to{transform:translateX(185%)}}
     .err{white-space:pre-wrap;color:#a32929;background:#fff3f3;border:1px solid #ffd4d4;border-radius:12px;padding:12px;margin-top:16px;display:none;font-size:14px}
+    .skill-beta-entry{position:fixed;right:18px;bottom:18px;z-index:99999;background:#8b1e2d;color:#fff;text-decoration:none;padding:12px 15px;border-radius:14px;box-shadow:0 10px 28px rgba(60,10,18,.25);font:700 14px/1.25 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.skill-beta-entry small{display:block;font-weight:500;opacity:.84;margin-top:2px}.skill-beta-entry:hover{background:#a32536}@media(max-width:640px){.skill-beta-entry{right:10px;bottom:10px;padding:10px 12px;font-size:13px}}
   </style>
 </head>
 <body>
@@ -55,6 +56,12 @@
       (0,eval)(data);
       (0,eval)(app);
       (0,eval)(guided);
+
+      const beta=document.createElement('a');
+      beta.className='skill-beta-entry';
+      beta.href='./criminal-law-beta.html';
+      beta.innerHTML='刑法新教學 Beta<small>未遂 vs 中止 · 手拉手學</small>';
+      document.body.appendChild(beta);
 
       // Hotfix: free-text Coach steps save on input, but V3 originally left the
       // Continue button disabled until a re-render. Keep button state synced.
